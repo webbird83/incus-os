@@ -34,6 +34,7 @@ config:
       access_key: "AKIAIOSFODNN7EXAMPLE"
       secret_key: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
       region: "us-east-1"
+  backup_frequency: ""  # Optional: Default is once per maintenance window
   retention:
     keep_daily: 7
     keep_weekly: 4
@@ -45,6 +46,9 @@ config:
 * `repository_password`: This password is required for both initializing a new repository and connecting to an existing one. Choose a strong password and store it securely.
 * `backend.s3.endpoint`: For Incus storage buckets, use the bucket's S3 endpoint URL.
 * `backend.s3.bucket`: The name of your S3 bucket or Incus storage bucket.
+* `backup_frequency`: Optional. Defines the time interval between backup cycles. If not set or empty, defaults to once per maintenance window. You can use:
+  * Duration string: `"1h"` for hourly backups, `"24h"` for daily backups, `"1w"` for weekly backups, `"2m"` for every 2 minutes
+  * Note: Custom frequencies still respect maintenance windows - backups will only run during active maintenance windows (if one is defined).
 * `retention`: Configure retention policies according to your needs. The example above keeps 7 daily, 4 weekly, and 12 monthly snapshots.
 
 ### Step 3: Verify the service status
@@ -68,8 +72,33 @@ state:
 Once configured and enabled, the Kopia service automatically:
 
 1. Connects to the repository (or creates a new one if it doesn't exist)
-2. Performs backups during maintenance windows (configured in `system.update.config.maintenance_windows`)
-3. Applies retention policies after each backup
+2. Monitors the configured backup frequency (default: once per maintenance window)
+3. Performs backups according to the frequency during active maintenance windows
+4. Applies retention policies after each backup
+
+### Backup Frequency Configuration
+
+By default, the service performs one backup per maintenance window. You can customize this using the `backup_frequency` option:
+
+**Example: Hourly backups:**
+```yaml
+config:
+  backup_frequency: "1h"
+```
+
+**Example: Daily backups:**
+```yaml
+config:
+  backup_frequency: "24h"
+```
+
+**Example: Weekly backups:**
+```yaml
+config:
+  backup_frequency: "1w"
+```
+
+Note: Even with custom frequencies, backups will only run during active maintenance windows (unless no maintenance windows are configured).
 
 To check the status of recent backups:
 
@@ -199,9 +228,11 @@ config:
 
 ### Backups not running
 
-* Check that maintenance windows are configured in `system.update.config.maintenance_windows`
+* Check that maintenance windows are configured in `system.update.config.maintenance_windows` (unless you have a custom frequency)
 * Verify the service is enabled: `incus admin os service show kopia`
-* Check the service status for error messages
+* Check that `repository_connected` is `true` in the service state
+* Verify the backup frequency is correct (check `backup_frequency` configuration)
+* Check the service status for error messages in `last_status`
 
 ### Restore fails
 

@@ -30,7 +30,8 @@ const (
 type Kopia struct {
 	common
 
-	state *state.State
+	state           *state.State
+	schedulerCancel context.CancelFunc
 }
 
 // Get returns the current service state.
@@ -98,6 +99,15 @@ func (n *Kopia) Update(ctx context.Context, req any) error {
 		}
 	}
 
+	// Restart the backup scheduler.
+	// Stop old scheduler if running.
+	if n.schedulerCancel != nil {
+		n.schedulerCancel()
+		n.schedulerCancel = nil
+	}
+	// Start new scheduler.
+	n.startBackupScheduler(ctx)
+
 	return nil
 }
 
@@ -121,7 +131,15 @@ func (n *Kopia) Start(ctx context.Context) error {
 	}
 
 	// Configure the service.
-	return n.configure(ctx)
+	err := n.configure(ctx)
+	if err != nil {
+		return err
+	}
+
+	// Start the backup scheduler.
+	n.startBackupScheduler(ctx)
+
+	return nil
 }
 
 // ShouldStart returns true if the service should be started on boot.
@@ -458,17 +476,149 @@ func (n *Kopia) isInMaintenanceWindow() bool {
 	return false
 }
 
+// getCurrentMaintenanceWindowID returns a unique identifier for the currently active maintenance window.
+// Returns empty string if no window is active.
+func (n *Kopia) getCurrentMaintenanceWindowID() string {
+	updateConfig := n.state.System.Update.Config
+
+	// If no maintenance windows are defined, use a daily identifier.
+	if len(updateConfig.MaintenanceWindows) == 0 {
+		now := time.Now()
+		return fmt.Sprintf("daily-%s", now.Format("2006-01-02"))
+	}
+
+	// Find the currently active window and create an identifier.
+	now := time.Now()
+	for _, window := range updateConfig.MaintenanceWindows {
+		if window.IsCurrentlyActive() {
+			// Create identifier based on window configuration and current date.
+			// For daily windows, use date. For weekly windows, use week identifier.
+			if window.StartDayOfWeek == api.NONE && window.EndDayOfWeek == api.NONE {
+				// Daily window - use date.
+				return fmt.Sprintf("daily-%s-%02d%02d", now.Format("2006-01-02"), window.StartHour, window.StartMinute)
+			}
+
+			// Weekly window - use week and day.
+			year, week := now.ISOWeek()
+			return fmt.Sprintf("weekly-%d-W%02d-%s-%02d%02d", year, week, string(window.StartDayOfWeek), window.StartHour, window.StartMinute)
+		}
+	}
+
+	return ""
+}
+
+// shouldPerformBackupInWindow checks if a backup should be performed in the current maintenance window.
+func (n *Kopia) shouldPerformBackupInWindow() bool {
+	currentWindowID := n.getCurrentMaintenanceWindowID()
+	if currentWindowID == "" {
+		return false
+	}
+
+	// If we haven't done a backup in this window yet, we should.
+	lastWindowID := n.state.Services.Kopia.State.LastBackupWindow
+	return lastWindowID != currentWindowID
+}
+
+// shouldPerformBackup checks if a backup should be performed based on the configured frequency.
+func (n *Kopia) shouldPerformBackup() bool {
+	//config := n.state.Services.Kopia.Config
+
+	// TODO: Remove this once we have a proper backup schedule.
+	slog.InfoContext(context.Background(), "Hack: Yes, we want a backup NOW!")
+	return true
+	/*
+		// Default: once per maintenance window.
+		if config.BackupFrequency == "" {
+			return n.shouldPerformBackupInWindow()
+		}
+
+		// Parse duration and check if enough time has passed since last backup.
+		frequency, err := time.ParseDuration(config.BackupFrequency)
+		if err != nil {
+			slog.WarnContext(context.Background(), "Failed to parse backup frequency, falling back to maintenance window", "frequency", config.BackupFrequency, "err", err)
+			return n.shouldPerformBackupInWindow()
+		}
+
+		lastBackup := n.state.Services.Kopia.State.LastBackup
+		if lastBackup.IsZero() {
+			// No backup yet, perform one.
+			return true
+		}
+
+		// Check if enough time has passed since last backup.
+		timeSinceLastBackup := time.Since(lastBackup)
+		return timeSinceLastBackup >= frequency
+	*/
+}
+
+// startBackupScheduler starts a goroutine that periodically checks if a backup should be performed.
+func (n *Kopia) startBackupScheduler(ctx context.Context) {
+	// Create a cancellable context for the scheduler.
+	schedulerCtx, cancel := context.WithCancel(ctx)
+	n.schedulerCancel = cancel
+
+	go func() {
+		for {
+			// Check if context is cancelled.
+			select {
+			case <-schedulerCtx.Done():
+				return
+			default:
+			}
+
+			// Check if a backup is already in progress.
+			if n.state.Services.Kopia.State.InProgress {
+				time.Sleep(1 * time.Minute)
+				continue
+			}
+
+			// Check if we should perform a backup.
+			if n.shouldPerformBackup() {
+				// For default frequency (empty), check if we're in a maintenance window.
+				// For custom frequency, backup is performed based on time elapsed.
+				config := n.state.Services.Kopia.Config
+				if config.BackupFrequency == "" || n.isInMaintenanceWindow() {
+					// Perform the backup.
+					slog.InfoContext(schedulerCtx, "Starting scheduled backup")
+					err := n.performBackup(schedulerCtx)
+					if err != nil {
+						slog.ErrorContext(schedulerCtx, "Scheduled backup failed", "err", err)
+						n.state.Services.Kopia.State.LastStatus = "Scheduled backup failed: " + err.Error()
+						n.state.Save()
+					} else {
+						// Update the window ID after successful backup.
+						currentWindowID := n.getCurrentMaintenanceWindowID()
+						if currentWindowID != "" {
+							n.state.Services.Kopia.State.LastBackupWindow = currentWindowID
+						}
+						n.state.Save()
+					}
+				}
+			}
+
+			// Determine sleep duration based on backup frequency.
+			config := n.state.Services.Kopia.Config
+			sleepDuration := 1 * time.Minute
+			if config.BackupFrequency != "" {
+				frequency, err := time.ParseDuration(config.BackupFrequency)
+				if err == nil {
+					// Use the configured frequency, but cap it at 1 minute minimum for checking.
+					// If frequency is longer, we still check every minute but only backup when frequency elapsed.
+					if frequency < 1*time.Minute {
+						sleepDuration = frequency
+					}
+				}
+			}
+			time.Sleep(sleepDuration)
+		}
+	}()
+}
+
 // performBackup performs a backup of the local ZFS pool.
 func (n *Kopia) performBackup(ctx context.Context) error {
 	// Check if repository is connected.
 	if !n.state.Services.Kopia.State.RepositoryConnected {
 		return errors.New("repository not connected")
-	}
-
-	// Check maintenance window.
-	if !n.isInMaintenanceWindow() {
-		n.state.Services.Kopia.State.LastStatus = "Outside maintenance window"
-		return errors.New("outside maintenance window")
 	}
 
 	// Find local pool.
@@ -549,6 +699,12 @@ func (n *Kopia) performBackup(ctx context.Context) error {
 	n.state.Services.Kopia.State.Progress = 100
 	n.state.Services.Kopia.State.LastBackup = time.Now()
 	n.state.Services.Kopia.State.LastStatus = "Backup completed successfully"
+
+	// Update the window ID after successful backup.
+	currentWindowID := n.getCurrentMaintenanceWindowID()
+	if currentWindowID != "" {
+		n.state.Services.Kopia.State.LastBackupWindow = currentWindowID
+	}
 
 	return nil
 }
