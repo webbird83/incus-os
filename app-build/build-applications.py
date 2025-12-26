@@ -19,7 +19,7 @@ with open("applications.json", "r") as f:
     applications = json.load(f)
 
 images = [
-    ["base", ["incus-osd", "kpx", "tailscale"]],
+    ["base", ["incus-osd", "kopia","kpx", "tailscale"]],
     ["migration-manager", [
         "lego",
         "migration-manager"]

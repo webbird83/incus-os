@@ -50,6 +50,7 @@ type State struct {
 	Services struct {
 		Ceph      api.ServiceCeph      `json:"ceph"`
 		ISCSI     api.ServiceISCSI     `json:"iscsi"`
+		Kopia     api.ServiceKopia     `json:"kopia"`
 		Linstor   api.ServiceLinstor   `json:"linstor"`
 		LVM       api.ServiceLVM       `json:"lvm"`
 		Multipath api.ServiceMultipath `json:"multipath"`

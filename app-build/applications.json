@@ -200,6 +200,26 @@
             "usr/local/bin/tailscale"
         ]
     },
+    "kopia": {
+        "version": "0.22.3",
+        "repo": "https://github.com/kopia/kopia.git",
+        "build_targets": [
+            [
+                "-o",
+                "kopia",
+                "."
+            ]
+        ],
+        "install_targets": [
+            [
+                "kopia",
+                "usr/local/bin/"
+            ]
+        ],
+        "clean_targets": [
+            "usr/local/bin/kopia"
+        ]
+    },
     "terraform-provider-incus": {
         "version": "1.0.2",
         "repo": "https://github.com/lxc/terraform-provider-incus.git",

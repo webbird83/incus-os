@@ -9848,6 +9848,7 @@ paths:
                                 example:
                                     - /1.0/services/ceph
                                     - /1.0/services/iscsi
+                                    - /1.0/services/kopia
                                     - /1.0/services/linstor
                                     - /1.0/services/lvm
                                     - /1.0/services/multipath
